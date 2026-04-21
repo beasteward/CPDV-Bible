@@ -96,6 +96,17 @@ export const openApiSpec: JsonObject = {
     license: { name: 'Public Domain' },
   },
   servers: [{ url: '/api/v1', description: 'API v1' }],
+  components: {
+    securitySchemes: {
+      ApiKeyAuth: {
+        type: 'apiKey',
+        in: 'header',
+        name: 'X-API-Key',
+        description: 'API key for authenticating requests. Public endpoints (/health, /docs) do not require a key.',
+      },
+    },
+  },
+  security: [{ ApiKeyAuth: [] }],
   tags: [
     { name: 'Books', description: 'Browse books, chapters, and verses' },
     { name: 'Search', description: 'Full-text search and discovery' },

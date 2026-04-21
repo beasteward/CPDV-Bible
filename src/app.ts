@@ -5,6 +5,7 @@ import pinoHttp from 'pino-http';
 import swaggerUi from 'swagger-ui-express';
 import { config } from './config';
 import { rateLimiter } from './middleware/rateLimiter';
+import { apiKeyAuth } from './middleware/apiKeyAuth';
 import { errorHandler } from './middleware/errorHandler';
 import { openApiSpec } from './docs/openapi';
 import booksRouter from './routes/books';
@@ -15,10 +16,27 @@ const app = express();
 
 // Security & utility middleware
 app.use(helmet());
-app.use(cors({ origin: config.corsOrigin }));
+app.use(
+  cors({
+    origin: config.corsOrigins.length > 0
+      ? (origin, callback) => {
+          // Allow requests with no origin (server-to-server, curl, etc.)
+          if (!origin) return callback(null, true);
+          if (config.corsOrigins.some(allowed =>
+            allowed === origin || (allowed.startsWith('*.') && origin.endsWith(allowed.slice(1)))
+          )) {
+            return callback(null, true);
+          }
+          callback(new Error('Not allowed by CORS'));
+        }
+      : '*',
+    credentials: true,
+  })
+);
 app.use(express.json());
 app.use(pinoHttp({ level: config.logLevel }));
 app.use(rateLimiter);
+app.use(apiKeyAuth);
 
 // API docs
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(openApiSpec, {
