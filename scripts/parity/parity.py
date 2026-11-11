@@ -66,7 +66,12 @@ class Client:
             if proxy:
                 p = urllib.parse.urlsplit(proxy)
                 c = http.client.HTTPSConnection(p.hostname, p.port or 80, timeout=60)
-                c.set_tunnel(self.host, self.port)
+                th = {}
+                if p.username is not None:  # proxy credentials from the URL (never printed)
+                    import base64
+                    cred = urllib.parse.unquote(p.username) + ":" + urllib.parse.unquote(p.password or "")
+                    th["Proxy-Authorization"] = "Basic " + base64.b64encode(cred.encode()).decode()
+                c.set_tunnel(self.host, self.port, headers=th)
                 return c
             return http.client.HTTPSConnection(self.host, self.port, timeout=60)
         return http.client.HTTPConnection(self.host, self.port, timeout=60)
@@ -162,7 +167,7 @@ def cases(profile, books, chapters_of, all_verses):
     for b in books:
         key = b["key"]
         chs = chapters_of[key]
-        sample = chs if not live else [chs[0], chs[-1]]
+        sample = chs if not live else [chs[-1]]
         for c in sample:
             ch = c["chapter"]
             q = urllib.parse.quote(str(ch))
@@ -174,8 +179,9 @@ def cases(profile, books, chapters_of, all_verses):
                 if all_verses:
                     for v in range(2, c["verseCount"] + 1):
                         yield g(f"verse {key} {ch}:{v}", f"/api/v1/books/{key}/{q}/{v}")
-        if live:
+        if live and books.index(b) % 6 == 0:
             yield g(f"verse {key} 1:1", f"/api/v1/books/{key}/1/1")
+            yield g(f"range {key} 1:2-5", f"/api/v1/books/{key}/1/2-5")
 
     # --- aliases / book-name resolution -----------------------------------
     for alias in ["gen", "GEN", "Gen", "1sam", "1 Samuel", "1%20Samuel", "1-samuel", "sam", "ps", "psalm",
@@ -352,6 +358,8 @@ def main():
     ap.add_argument("--key2-env", default="CPDV_KEY2")
     ap.add_argument("--all-verses", action="store_true")
     ap.add_argument("--report")
+    ap.add_argument("--start-at", type=int, default=0, help="skip the first N cases (resume an aborted live run)")
+    ap.add_argument("--only", help="comma-separated substrings; run only cases whose name contains one")
     ap.add_argument("--pace", type=float, default=0.0, help="seconds between requests (live)")
     ap.add_argument("--min-remaining", type=int, default=0,
                     help="abort if server A's RateLimit-Remaining drops below this (protects prod)")
@@ -363,12 +371,15 @@ def main():
     A, B = Client(args.a), Client(args.b)
     kh = [("X-API-Key", key)] if key else []
 
-    books = json.loads(A.req("GET", "/api/v1/books", kh).body)["data"] if args.profile != "ratelimit" else []
+    # Live: read the setup data from B so it costs the production server nothing
+    # (its compared copies are the "book"/"chapters" cases below).
+    S = B if live else A
+    books = json.loads(S.req("GET", "/api/v1/books", kh).body)["data"] if args.profile != "ratelimit" else []
     chapters_of = {}
     for b in books:
-        chapters_of[b["key"]] = json.loads(A.req("GET", f"/api/v1/books/{b['key']}/chapters", kh).body)["data"]
+        chapters_of[b["key"]] = json.loads(S.req("GET", f"/api/v1/books/{b['key']}/chapters", kh).body)["data"]
     # Mirror the setup requests on B so both rate-limit counters stay in step.
-    if args.profile != "ratelimit":
+    if args.profile != "ratelimit" and not live:
         B.req("GET", "/api/v1/books", kh)
         for b in books:
             B.req("GET", f"/api/v1/books/{b['key']}/chapters", kh)
@@ -381,13 +392,18 @@ def main():
 
     results, diffs, explained, counts = [], [], [], Counter()
     lat = {"a": [], "b": []}
-    for name, method, path, headers, flags in cases(args.profile, books, chapters_of, args.all_verses):
+    only = [x for x in (args.only or "").split(",") if x]
+    for i, (name, method, path, headers, flags) in enumerate(cases(args.profile, books, chapters_of, args.all_verses)):
+        if i < args.start_at or (only and not any(o in name for o in only)):
+            continue
         hs = sub(headers, key, key2, etags)
         ra = A.req(method, path, hs)
         rb = B.req(method, path, hs)
         lat["a"].append(ra.ms)
         lat["b"].append(rb.ms)
         counts["requests"] += 1
+        if counts["requests"] % 50 == 0:
+            print(f"... {counts['requests']} requests, {len(diffs)} diffs so far", file=sys.stderr, flush=True)
         if args.min_remaining:
             rem = dict(ra.headers).get("ratelimit-remaining")
             if rem is not None and int(rem) < args.min_remaining:
