@@ -1,0 +1,35 @@
+# Rust (Axum) build of the CPDV Bible API. The Node service keeps using
+# ./Dockerfile; this file is selected per service with
+# RAILWAY_DOCKERFILE_PATH=Dockerfile.rust (Railway) or `docker build -f`.
+#
+#   docker build -f Dockerfile.rust -t cpdv-bible-rs .
+#   docker run -p 3000:3000 -e API_KEYS=... cpdv-bible-rs
+
+FROM rust:1-slim-bookworm AS builder
+WORKDIR /src
+# Dependency layer: build against stub sources so it is cached until
+# Cargo.toml/Cargo.lock change.
+COPY Cargo.toml Cargo.lock ./
+COPY crates/bible/Cargo.toml crates/bible/Cargo.toml
+COPY crates/server/Cargo.toml crates/server/Cargo.toml
+RUN mkdir -p crates/bible/src crates/server/src \
+ && echo "" > crates/bible/src/lib.rs \
+ && echo "fn main() {}" > crates/server/src/main.rs \
+ && cargo build --release -p cpdv-server \
+ && rm -rf crates/*/src target/release/.fingerprint/cpdv-*
+COPY crates crates
+# (the release profile already strips the binary)
+RUN cargo build --release -p cpdv-server
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates tzdata \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --uid 10001 --home /app cpdv
+WORKDIR /app
+COPY --from=builder /src/target/release/cpdv-server /usr/local/bin/cpdv-server
+COPY data/ data/
+ENV NODE_ENV=production PORT=3000 DATA_PATH=/app/data/EntireBible-CPDV.json
+USER cpdv
+EXPOSE 3000
+CMD ["cpdv-server"]
