@@ -1,0 +1,12 @@
+[package]
+name = "cpdv-bible"
+description = "CPDV Bible data model, loader, book-name resolution, search, reference parser and Vulgate/Hebrew psalm numbering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+ryu-js.workspace = true
